@@ -1,0 +1,267 @@
+---
+title: "ISE201_Final_Project"
+author: "Artem Abdikov"
+date: "2024-12-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Dataset introduction
+
+The dataset selected is City of San Jose fire incidents from the year of 2023. The dataset contains records of all incidents involving the Fire Department of San Jose. The primary reasons for choosing this dataset was it being a real life dataset in a sea of synthetic educational datasets as well as its proximity. Visiting San Jose frequently increases its relevance. The exploration of this dataset is relevant for me and should be relevant for anyone because anyone might require firefighters' help at some point and even one's life might depend on them. It is beneficial to have an idea how they operate and if you can expect them to show up fast. Primary focus of the analysis is dedicated to time in between all the phases (from the call to clear).
+
+The data is very rich, potential questions could be: How fast is a response time (is it fast enough or is it dangerously slow)? How many incidents a day are happening and what time is the most busy (is there a time of day where more manpower needed)? How many incidents each station/battalion get (are they overworked, do they need more people)? What are the most incident-rich streets (more departments needed there)? What is the trend (more incidents or less)?
+All these questions should be analyzed since a lot of lives depend on proper work of Fire Department.
+
+The source of the data is https://data.sanjoseca.gov/ , the official data portal of San Jose. The data was compiled by government employees. The study was observational since these are just recordings of events that happened. Each entry (row) is a fire department related incident. The data has: 2 identification columns, denoting each unique incident (2 is redundant, 1 will be removed). Several timestamp columns at different stages of an incident, the time of call, dispatch time, time the unit left the station, time the unit is on scene and time the incident was cleared. On-scene Unit column suggests the main unit assigned to the incident and the Unit_count column shows if any units that joined the main one and if so how many total were engaged. Some other categorical data is priority, indcident type and final incident category, describing the incident. Street name denotes the street the incident took place. Station columns indicates the station assigned to the incident and battalion denotes the battalion (crew) sent on the incident.
+
+
+## Dataset showcase and EDA
+
+
+The data looks as follows:
+```{r}
+library(tidyverse)
+
+rawdata <- read.csv("sanjosefireincidents_2023.csv")
+head(rawdata)
+summary(rawdata)
+```
+
+
+As can be seen, the data is fairly raw and requires both general cleanup as well as some preparations for my particular study (transformation of dates between the phases into time elapsed in between them).
+
+Starting with data type assignment and reasessment of summary function.
+```{r}
+rawdata$Incident_No <- as.factor(rawdata$Incident_No)
+rawdata$Date_Time_Of_Event <- strptime(rawdata$Date_Time_Of_Event,format="%Y-%m-%d  %H:%M")
+rawdata$Dispatched_Time <- strptime(rawdata$Dispatched_Time,format="%Y-%m-%d  %H:%M")
+rawdata$Unit_On_The_Way_Time <- strptime(rawdata$Unit_On_The_Way_Time,format="%Y-%m-%d  %H:%M")
+rawdata$Unit_On_Scene_TimeStamp <- strptime(rawdata$Unit_On_Scene_TimeStamp,format="%Y-%m-%d  %H:%M")
+rawdata$On_Scene_Unit <- as.factor(rawdata$On_Scene_Unit)
+rawdata$Cleared_TimeStamp <- strptime(rawdata$Cleared_TimeStamp,format="%Y-%m-%d  %H:%M")
+rawdata$Priority <- as.factor(rawdata$Priority)
+rawdata$Final_Incident_Type <- as.factor(rawdata$Final_Incident_Type)
+rawdata$Final_Incident_Category <- as.factor(rawdata$Final_Incident_Category)
+rawdata$Street_Name <- as.factor(rawdata$Street_Name)
+rawdata$Station <- as.factor(rawdata$Station)
+rawdata$Battalion <- as.factor(rawdata$Battalion)
+
+summary(rawdata)
+```
+
+
+Removing the useless Incident_No column. Any row is identifiable by just id.
+```{r}
+data <- subset(rawdata, select=-c(Incident_No))
+```
+
+
+Performing aforementioned transformation of dates into just time elapsed between each phase.
+```{r}
+data$e_to_d_min <- as.numeric(data$Dispatched_Time - data$Date_Time_Of_Event)/60
+data$d_to_otw_min <- as.numeric(data$Unit_On_The_Way_Time - data$Dispatched_Time)/60
+data$otw_to_os_min <- as.numeric(data$Unit_On_Scene_TimeStamp - data$Unit_On_The_Way_Time)/60
+data$os_to_c_min <- as.numeric(data$Cleared_TimeStamp-data$Unit_On_Scene_TimeStamp)/60
+```
+
+
+Assessing NA situation in our data.
+```{r}
+na_count <-sapply(data, function(y) sum(length(which(is.na(y)))))
+na_count
+```
+
+
+The only missing data is certain timestamps and there are not so many of them, we can sacrifice them since we still have >10000 entries after.
+
+Removing NAs.
+```{r}
+nonadata <- na.omit(data)
+```
+
+Another summary to check where we're at now and what to do next.
+```{r}
+summary(nonadata)
+```
+
+From the summary we can see the following. The events are recorded from Jan 1st 2023 to Dec 31st 2023. There are enumerated units that were called a certain amount of times each. On average it take 1.38 or 1 if we round down units. There is a definite imbalance in 1st vs 2nd priority and imbalance in Fire vs Medical incident types. The next 3 columns are just number of incidents that occurred on certain streets and involved certain stations/Battalions.
+
+However, if we look at the newly introduced time elapsed columns we can spot an anomaly. Negative time. I specifically kept the logic of my arithmetical operations to have them as positive numbers only. Let us take a look how these negative numbers occurred.
+
+```{r}
+head(nonadata[nonadata[16] < 0, c("Dispatched_Time", "Unit_On_The_Way_Time")])
+head(nonadata[nonadata[17] < 0, c("Unit_On_The_Way_Time", "Unit_On_Scene_TimeStamp")])
+head(nonadata[nonadata[18] < 0, c("Unit_On_The_Way_Time", "Cleared_TimeStamp")])
+```
+
+From this output we can see that the entries are probably erroneous or have some meaning unknown to us. Since the amount of such entries is minimal, we remove it as potentially bad data.
+
+```{r}
+nonadata <- nonadata[nonadata$e_to_d_min >= 0, ]
+nonadata <- nonadata[nonadata$d_to_otw_min >= 0, ]
+nonadata <- nonadata[nonadata$otw_to_os_min >= 0, ]
+nonadata <- nonadata[nonadata$os_to_c_min >= 0, ]
+
+summary(nonadata)
+```
+
+Now our summary statistics make sense. We can see that on average from call to dispatch it take 1.423 minutes, from dispatch to the crew being on the way it is 1.314 minutes on average. It takes 5.17 minutes on average to get to the incident and 17.23 minutes to deal with the incident.
+
+## Grouping and visualization
+
+
+My first point of interest would be seeing how many cases each unit covered through the year for general information as I get started.
+```{r fig.height = 20}
+nonadata %>%  group_by(On_Scene_Unit) %>% summarise(n = n()) %>% ggplot() + geom_bar(mapping = aes(x = reorder(On_Scene_Unit, -n), y = n), stat="identity") + coord_flip() + labs(y="# of incidents covered", x="Unit ID", title="Incidents amount per unit")
+```
+
+From this we can see that there are two most called units, E1 and E4, while there are a handful of units that are barely ever assigned. No conclusions can be drawn since we know that there can be several units on the scene with only 1 being main, so these couple of units might be mostly supporting ones. There are also specializations among units, so these could be the most niche units only needed in very particular situations.
+
+
+Another point of interest is average time each unit requires on each stage.
+Starting with time from event to dispatch.
+
+```{r fig.height = 10}
+nonadata %>% group_by(On_Scene_Unit) %>% summarise(avg = mean(e_to_d_min)) %>% ggplot(mapping = aes(x = reorder(On_Scene_Unit, -avg), y = avg, fill=On_Scene_Unit)) + geom_bar(stat = "identity") + coord_flip() + labs(y="Avg time to dispatch after call", x="Unit ID", title="Time to dispatch by Unit")
+```
+
+From this plot we can see one anomaly, which is unit E302 take the longest to dispatch after the call. 50 minutes seems unacceptable but it is probably aforementioned niche unit that is very rarely required. Otherwise, in general, it takes less than 5 minutes on average for a unit to be dispatched. Most of the time it is even less than 3.
+
+Take a quick look at unit E302 situation.
+
+```{r}
+nonadata[nonadata[6] == 'E302', ]
+```
+
+And indeed, there are only 2 instances of it being dispatched.
+
+Checking average time to move out after dispatch.
+```{r fig.height = 10}
+nonadata %>% group_by(On_Scene_Unit) %>% summarise(avg = mean(d_to_otw_min)) %>% ggplot(mapping = aes(x = reorder(On_Scene_Unit, -avg), y = avg, fill=On_Scene_Unit)) + geom_bar(stat = "identity") + coord_flip() + labs(y="Avg time between dispatch and move out", x="Unit ID", title="Time to move out after dispatch by Unit")
+```
+
+This looks much healthier since on average it takes no more than 5 minutes for any unit to move out in even the most extreme cases. Most of the time it is less than 2 minutes on average. Pretty impressive.
+
+Check how much time it takes to get to destination
+```{r fig.height = 10}
+nonadata %>% group_by(On_Scene_Unit) %>% summarise(avg = mean(otw_to_os_min)) %>% ggplot(mapping = aes(x = reorder(On_Scene_Unit, -avg), y = avg, fill=On_Scene_Unit)) + geom_bar(stat = "identity") + coord_flip() + labs(y="Avg time to get to scene", x="Unit ID", title="Time to get to scene by Unit")
+```
+
+There is something going on with unit E302 and HIT29, the two niche ones that we noticed before, but on average, it takes less than 10 minutes for firefighters to get to their destination.
+
+
+Last but not least, average time to deal with the situation on scene.
+```{r fig.height = 10}
+nonadata %>% group_by(On_Scene_Unit) %>% summarise(avg = mean(os_to_c_min)) %>% ggplot(mapping = aes(x = reorder(On_Scene_Unit, -avg), y = avg, fill=On_Scene_Unit)) + geom_bar(stat = "identity") + coord_flip() + labs(y="Avg time to clear", x="Unit ID", title="Time to clear by Unit")
+
+```
+
+For the most part, it seems that, on average, most units deal with the situation within ~25 minutes after their arrival.
+We can also see a tendency of E335, HIT29 and E302 units being the 3 most special units also because it takes the longest for them to complete their mission. The graph adds more validity to the theory of them being the most specialized ones since the tasks they cover must be very difficult if they take so long to deal with.
+
+
+Let's check the Priority spread for further analysis later.
+```{r}
+nonadata %>%  group_by(Priority) %>% summarise(n = n()) %>% ggplot() + geom_bar(mapping = aes(x="", y = n,fill=Priority), stat="identity") + coord_polar("y", start=0) + theme_void()
+```
+
+It seems most cases get assigned first priority, which is the more important incidents requiring faster response. 
+
+Let's check the spread of incident types, medical vs non-medical.
+
+```{r}
+nonadata %>%  group_by(Final_Incident_Type) %>% summarise(n = n()) %>% ggplot() + geom_bar(mapping = aes(x="", y = n,fill=Final_Incident_Type), stat="identity") + coord_polar("y", start=0) + theme_void()
+```
+
+It seems the majority of incidents are medical which poses a question of how related are priority and it being a medical emergency.
+
+Check the Incident categories spread.
+
+```{r}
+nonadata %>%  group_by(Final_Incident_Category) %>% summarise(n = n()) %>% ggplot() + geom_bar(mapping = aes(x="", y = n,fill=Final_Incident_Category), stat="identity") + coord_polar("y", start=0) + theme_void()
+```
+
+From this we can see that most incidents are medical only emergencies. The 3 biggest categories after are Uncategorized, Good Intent Or Service (false alarm with good intent) and Rescue/HazMat/Usar & Non-fire Hazards. Actual Fire related incidents are fairly rare.
+
+Finally, to take a peek at priority and category relations.
+
+```{r}
+nonadata %>%  group_by(Final_Incident_Category,Priority) %>% summarise(n = n()) %>% ggplot() + geom_bar(mapping = aes(x=Priority, y = n,fill=Final_Incident_Category), stat="identity")
+```
+
+From this graph we can see that, indeed, a lot of medical emergencies are first priority but it is not necessarily always the case. The curious part is that even fires are not guaranteed to be first priority at all times. We can see a tiny  pink line in priority 2 bar indicating a vehicle/aircraft fires. We can see that priorities are assigned on a strictly case by case basis and the only hard rule might be structure/vegetation fires being a first priority at all times but it is unconfirmed.
+
+
+That concludes my EDA.
+
+## Data Analysis
+
+Part 1.
+
+
+Hypothesis Testing
+
+For hypothesis testing I will investigate the following hypothesis:
+
+H_0: mean time of arrival for Priority 1 incidents = mean time arrival for Priority 2 incidents
+
+H_1: mean time of arrival for Priority 1 incidents < mean time arrival for Priority 2 incidents
+
+
+Some logistics before the test itself. Calculating arrival time (dispatch to on the way time + on the way to on sight time)
+
+Then splitting in two subsets for each priority type.
+```{r}
+nonadata$arrival_time <- nonadata$d_to_otw + nonadata$otw_to_os
+first_priority <- subset(nonadata, Priority == "Priority 1")
+second_priority <- subset(nonadata, Priority == "Priority 2")
+```
+
+Performing 2 sample mean t-test
+```{r}
+t_test_result <- t.test(first_priority$arrival_time, second_priority$arrival_time, 
+                        alternative = "less", # one-tailed test
+                        var.equal = FALSE)
+
+t_test_result
+```
+From the t-test performed, the mean time of arrival for Priority 1 incidents is much smaller than that of Priority 2 incidents, therefore we reject the null hypothesis.
+
+Part 2.
+
+Another question that comes to mind is, how do the firefighters perform through the year? Do they get tired through the year and perform worse?
+For that purpose I will use Linear Regression to see the trend in time of arrival
+
+Some preparations at first, I will group the data by months and get an average time of arrival for each.
+```{r}
+nonadata$month <- format(nonadata$Date_Time_Of_Event, "%Y-%m")
+averages <- (nonadata %>% group_by(month) %>% summarise(avg = mean(arrival_time)))
+averages$month <- as.Date(paste0(averages$month, "-01"))
+```
+
+
+Now calculating the linear function and plotting it.
+```{r}
+linear_function <- lm(averages$avg ~ averages$month)
+summary(linear_function)
+ggplot(averages, aes(x = month, y=avg)) + geom_point() + geom_smooth(method = "lm", se=FALSE) +  geom_abline(slope = coef(linear_function))
+
+```
+
+
+As demonstrated by linear regression plot, the trend is actually a downward one. Thus, for this particular year the times of arrival were slightly going down.
+
+## Conclusion
+
+From my assessment, the Firefighters force in San Jose are performing quite well. Aside from some very strange outlier cases they are arriving on scene very fast and also stable. If anything, the trend for mean arrival time was going down through the year. It is also evident that the Priority system in place is working and the firefighters do arrive to incidents requiring faster response quicker than to those that allow some time for maneuvers. From EDA it is also evident that a lot of incidents are actually medical in nature and are not related to firefighters' direct responsibilities.
+
+
+## References
+
+Acquired dataset from: https://data.sanjoseca.gov/
+The R code is composed using in-class materials and in-class books with miscellaneous use of internet for syntax (ex: stackoverflow.com).
+
